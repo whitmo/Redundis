@@ -1,0 +1,19 @@
+=================================
+ Redundis Command Line interface
+=================================
+
+::
+
+ $ rdds runall
+
+Launch the supervisor, haproxy, the watcher, and the redi.
+
+ $ rdds install
+
+Populate a virtualenv with all the necessary bits to a redundis pod.
+
+ $ rdds watcher
+
+Start the watcher procs.
+
+ $ rdds redis

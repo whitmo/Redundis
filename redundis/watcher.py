@@ -41,11 +41,21 @@ class Watcher(object):
             import pdb;pdb.set_trace()
         return cxn
 
+    @property
+    def last_redis(self):
+        return len(self.redi) - 1
+    
     def handle_outage(self, greenlet):
         cxn = greenlet.value
         spec = self._cxn.pop(cxn)
-        if spec is self.redi[0]:
-            self.promote_slaves()
+        which_redis = self.redi.index(spec)
+        self.redis.append(self.redi.pop(0)) # to back of the bus
+        if which_redis == 0:
+            spec = self.promote_slaves(spec)
+        elif which_redis != self.last_redis:
+            spec = self.heal_chain(spec)
+        gevent.sleep(1)
+        self._monitors.append(self.connect(spec))
 
     def start(self):
         self._monitors.extend(self.connect(redis) for redis in self.redi)
