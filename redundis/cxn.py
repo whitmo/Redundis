@@ -20,12 +20,12 @@ class Connection(BaseCxn):
                  encoding_errors='strict', 
                  failure_callback=None,
                  parser_class=DefaultParser):
-        BaseCxn.__init__(host, port, db, password, socket_timeout, encoding,
+        BaseCxn.__init__(self, host, port, db, password, socket_timeout, encoding,
                          encoding_errors, parser_class)
         self.attempts = 0
         self._depth = count()
-        if failure_callback is None:
-            self.failure_callback = self.default_callback
+        self.failure_callback = failure_callback is not None and \
+                                failure_callback or self.default_callback
 
     def default_callback(self, cxn, exc):
         logger.debug(traceback.format_exc(limit=None))
