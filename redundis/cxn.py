@@ -14,14 +14,21 @@ class Connection(BaseCxn):
     """
     A Redis connection object that executes a callback on failure
     """
-    def __init__(self, host='localhost',
-                 port=6379, db=0, password=None,
-                 socket_timeout=None, encoding='utf-8',
-                 encoding_errors='strict', 
-                 failure_callback=None,
-                 parser_class=DefaultParser):
-        BaseCxn.__init__(self, host, port, db, password, socket_timeout, encoding,
-                         encoding_errors, parser_class)
+    defaults = dict(host='localhost',
+                    port=6379, db=0,
+                    password=None,
+                    socket_timeout=None,
+                    encoding='utf-8',
+                    encoding_errors='strict', 
+                    failure_callback=None,
+                    parser_class=DefaultParser)
+    
+    def __init__(self, **kw):
+        args = self.defaults.copy()
+        self.original_args = args
+        args.update(kw)
+        failure_callback = args.pop('failure_callback')
+        BaseCxn.__init__(self, **args)
         self.attempts = 0
         self._depth = count()
         self.failure_callback = failure_callback is not None and \
@@ -44,17 +51,20 @@ class Connection(BaseCxn):
                 raise
             return out
 
-    def update(self, host='localhost',
-               port=6379, db=0, password=None,
-               socket_timeout=None, encoding='utf-8',
-               encoding_errors='strict', **kwargs):
-        self.host = host
-        self.port = port
-        self.db = db
-        self.password = password
-        self.socket_timeout = socket_timeout
-        self.encoding = encoding
-        self.encoding_errors = encoding_errors
+    update_keys = ('host',
+                   'port',
+                   'db',
+                   'password',
+                   'socket_timeout',
+                   'encoding',
+                   'encoding_errors')
+
+    def update(self, **kwargs):
+        args = self.original_args.copy()
+        args.update(**kwargs)
+        
+        [setattr(self, key, args[key]) for key in self.update_keys]
+
         self._sock = None
         self.attempts = 0
 

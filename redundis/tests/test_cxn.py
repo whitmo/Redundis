@@ -38,6 +38,10 @@ class TestConnection(unittest.TestCase):
         assert isinstance(error, redis.ConnectionError)
         assert cxn_in is cxn
 
+    def test_update(self):
+        cxn = self.makeone(port=0)
+        cxn.update(port=0)
+
 
 class TestConnectionPool(unittest.TestCase):
     """
