@@ -2,12 +2,12 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 from cStringIO import StringIO
+from contextlib import contextmanager
 from time import time
 from traceback import format_exc
-from contextlib import contextmanager
 import logging
-import socket
- 
+
+
 logger = logging.getLogger(__name__)
  
 
@@ -22,6 +22,9 @@ class StatsSocket(object):
 
     def set_weight(self, backend, server, weight):
         self.execute("set weight',  %s/%s %s" %(backend, server, weight))
+
+    def set_weight_tuple(self, (backend, server, weight)):
+        return self.set_weight(backend, server, weight)
 
     def enable(self, backend, server):
         self.execute('enable server', '%s/%s' %(backend, server))
@@ -56,6 +59,7 @@ def unixsocket(sockname):
     """
     sets up a unix socket and closes it when the block exits. Catches errors.
     """
+    from gevent import socket
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         client.connect(sockname)

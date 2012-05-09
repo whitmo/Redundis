@@ -26,6 +26,9 @@ setup(name='Redundis',
       install_requires=requires,
       entry_points="""
       [console_scripts]
-      rdds = redundis.cli:main      
+      dundis = redundis.cli:main
+
+      [redundis.cli]
+      devinst = redundis.devinst:DevInstall
       """,
       )

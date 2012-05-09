@@ -1,7 +1,10 @@
+#from .resolver import DottedNameResolver
+from collections import OrderedDict
+from path import path
 import json
 import pkg_resources
 import yaml
-from .resolver import DottedNameResolver
+
 
 try:
     from yaml import CLoader as Loader
@@ -13,7 +16,7 @@ def yml_load(stream, loader=Loader):
     return yaml.load_all(stream, loader)
 
 
-resolve = DottedNameResolver(None).maybe_resolve
+#resolve = DottedNameResolver(None).maybe_resolve
     
 
 
@@ -52,3 +55,14 @@ def res_filename(req, path):
 
 def res_json(req, path):
     return json.load(res_stream(req, path))
+
+
+def redis_conf_to_dict(fp):
+    fp = path(fp)
+    tuples = (x.split(' ', 1) for x in path(fp).text().split('\n') 
+              if x and not x.startswith('#'))
+    return OrderedDict(tuples)
+    
+def od_to_redis_conf(od, outfile):
+    path(outfile).write_text('\n'.join("%s %s" %(x, y) for x, y in od.items()))
+    return path(outfile).text()
