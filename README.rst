@@ -44,7 +44,10 @@ Run haproxy off a config that looks like::
 Redis clients should attach to redis via haproxy. For a client running
 on the same box as haproxy in this case: `localhost:6679`.
 
-The watcher needs access to the unix socket (defaults to `/tmp/redundis-haproxy.sock`).  This means you will need to run haproxy and the watcher on the same machine (or set up some sort of tunnel perhaps using `socat`).
+The watcher needs access to the unix socket (defaults to
+`/tmp/redundis-haproxy.sock`).  This means you will need to run
+haproxy and the watcher on the same machine (or set up some sort of
+tunnel perhaps using `socat`).
 
 
 Caveats
