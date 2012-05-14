@@ -1,7 +1,6 @@
 import gevent.monkey
 gevent.monkey.patch_all()
 
-
 from . import haproxy
 from gevent import pool
 from gevent.event import Event
@@ -12,6 +11,8 @@ import inspect as ins
 import logging
 import operator
 import redis
+import itertools
+from cliff.command import Command
 
 
 class Logged(object):
@@ -65,15 +66,17 @@ class RedisCxn(Logged):
         """
         poll a redis host until it become available
         """
-        self.debug("MON-DOWN %s:%s", self.host, self.port)
+        counter = itertools.count()
         while True:
             try:
                 self.cxn.ping()
                 self.info("%s:%s back up", self.host, self.port)
+                self.connected = True
                 event.set()
                 return True
             except ConnectionError:
-                self.debug("%s:%s still down", self.host, self.port)
+                if not next(counter) % 5:
+                    self.debug("%s:%s down", self.host, self.port)
                 gevent.sleep(interval)
 
     def monitor_up(self, event, key='redundis.monitor'):
@@ -83,19 +86,17 @@ class RedisCxn(Logged):
         start a hanging connection that will either return or
         disconnect with an error. 
         """
-        self.debug("MON-UP %s:%s", self.host, self.port)
-
         try:
             out = self.cxn.blpop(key)
             event.set()
             return out
-        except ConnectionError, e:
-            self.warn(e)
+        except ConnectionError:
+            self.warn("%s:%s has had a connection failure", self.host, self.port)
             self.connected = False
             event.set()
-            return False
+            return self
         except gevent.GreenletExit:
-            import pdb;pdb.set_trace()
+            pass
 
     @property
     def role(self):
@@ -149,7 +150,9 @@ class Watcher(Logged):
                                 'localhost:6380',
                                 'localhost:6381'],
                           redis_proxy='localhost:6666',
-                          haproxy_sock='/tmp/redundis-haproxy.sock')
+                          haproxy_sock='/tmp/redundis-haproxy.sock',
+                          ha_backend='redis',
+                          ha_prefix='redis-%s')
 
     weights = (150, 1, 0)
 
@@ -160,13 +163,13 @@ class Watcher(Logged):
                         stable=set(('master', 'slave', 'slave')))
     
     def __init__(self, redi=None, haproxy_sock=None, redis_proxy=None,
-                 ha_backend='redis', ha_prefix='redis-%s', down_poll=2):
-        self.redi = redi and redis or self.defaults.redi
+                 ha_backend=None, ha_prefix=None, down_poll=2):
+        self.redi = redi and redi or self.defaults.redi
         self.down_poll = down_poll
         self.redis_proxy = redis_proxy and redis_proxy or self.defaults.redis_proxy
         self.haproxy = self.statssocket_class(haproxy_sock and haproxy_sock or self.defaults.haproxy_sock)
-        self.ha_backend = ha_backend
-        self.ha_prefix = ha_prefix
+        self.ha_backend = ha_backend and ha_backend or self.defaults.ha_backend
+        self.ha_prefix = ha_prefix and ha_prefix or self.defaults.ha_prefix
         self.pool = pool.Pool(4)
 
         self.instances = None
@@ -191,19 +194,23 @@ class Watcher(Logged):
         self.instances.extend(self.redis_class.from_spec(spec) for spec in self.redi)
         return self.instances
 
-    def logging_setup(self):
-        logging.basicConfig(level=logging.DEBUG,
+    def logging_setup(self, loglevel=logging.INFO):
+        logging.basicConfig(level=loglevel,
                             format='[%(levelname)s] %(message)s')
 
     def dispatch_for_roles(self, roles):
         self.debug("dfr: %s", roles)
         name = self._role_patterns.get(tuple([x for x in roles if x]), 'default_role_handler')
         method = getattr(self, name)
-        return method(roles)
+        try:
+            return method(roles)
+        except Exception:
+            #import pdb, sys;pdb.post_mortem(sys.exc_info()[2])
+            self.error("Unexpected exception", exc_info=True)
 
-    @for_roles('slave', 'slave', 'slave') # should never happen?!
     def default_role_handler(self, roles):
-        self.error("Pathological foul up: triple replicants")
+        if not any(roles):
+            return self.instances
         return self.all_up_reversed(roles)
 
     @for_roles(None, None, None)
@@ -213,10 +220,22 @@ class Watcher(Logged):
         """
         return self.instances
 
-    @for_roles('master', 'slave', 'slave')
-    @for_roles('master', 'master', 'master') 
-    @for_roles('master', 'master', 'slave') # unlikely
-    @for_roles('master', 'slave', 'master') 
+    # these conditions likely result from intermittent network issues.
+
+    @for_roles('master', 'master', 'slave') 
+    def abberation1(self, roles):
+        self.warn("abberation1 '%s'" %roles)
+        return self.masterup_fix_chain(roles)
+
+    @for_roles('slave', 'slave', 'slave')  
+    def abberation2(self, roles):
+        self.warn("abberation2 '%s'" %roles)
+        return self.all_up_reversed(roles)
+
+
+    @for_roles('master', 'slave', 'slave')   # normal order, but may need rechain
+    @for_roles('master', 'master', 'master') # initial order
+    @for_roles('master', 'slave', 'master')  # a redis returns
     def masterup_fix_chain(self, roles):
         """
         A master is in the master position. Chain redis to each
@@ -230,6 +249,7 @@ class Watcher(Logged):
         return self.instances
 
     @for_roles('slave', 'master', 'master')
+    @for_roles('slave', 'master', 'slave')
     @for_roles('slave', 'slave', 'master')
     def all_up_reversed(self, roles):
         r1, _, _ = self.instances
@@ -238,7 +258,7 @@ class Watcher(Logged):
         
     @for_roles('master')
     def only_master(self, roles):
-        self.insert(0, self.instances.pop(roles.index('master')))
+        self.instances.insert(0, self.instances.pop(roles.index('master')))
         self.assign_weights(self.instances[0])
         return self.instances
 
@@ -247,7 +267,7 @@ class Watcher(Logged):
         """
         Promote to master, await return of other redi
         """
-        self.insert(0, self.instances.pop(roles.index('slave')))
+        self.instances.insert(0, self.instances.pop(roles.index('slave')))
         self.assign_weights(self.instances[0])
         return self.instances
 
@@ -255,9 +275,9 @@ class Watcher(Logged):
         """
         Reorder and remaster instances so r1 -> r2 
         """
-        r1 = self.instances.pop(roles.index(r1))
-        r2 = self.instances.pop(roles.index(r2))
-        [self.instances.insert(0, r) for r in r2, r1]
+        offline = self.instances.pop(roles.index(None))
+        r1, r2 = self.instances
+        self.instances.append(offline)
         self.pool.spawn(r1.slaveof)
         self.pool.spawn(r2.slaveof, r1)
         self.pool.join()
@@ -291,25 +311,82 @@ class Watcher(Logged):
         return self.heal_pair(roles, 'master', 'master')
 
     def assign_weights(self, *insts):
-        args = ((self.ha_backend, self.ha_prefix % inst.cxn_args.port, str(lbs)) for inst, lbs in zip(insts, self.weights))
-        self.pool.map(self.haproxy.set_weight_tuple, args)
+        """
+        Takes a list of `insts` of a maximimum length 3 that is
+        assumed to be in chain order and applies the appropriate
+        weights in haproxy.
+        """
+        args = ((self.ha_backend, self.ha_prefix % inst.cxn_args.port, str(lbs)) \
+                for inst, lbs in zip(insts, self.weights))
+        self.pool.map(self.set_weight, args)
+
+    def set_weight(self, args):
+        backend, server, weight = args
+        self.haproxy.set_weight(backend, server, weight)
+        cur = self.haproxy.get_weight(backend, server).strip()
+        self.debug("%s %s", server, cur)
+
+    def check_weights(self, *insts):
+        args = ((self.ha_backend, self.ha_prefix % inst.cxn_args.port) for inst in insts)
+        return self.pool.map(self.haproxy.get_weight_tuple, args)        
+
+    def do_dispatch(self):
+        insts = self.dispatch_for_roles(self.roles())
+        return zip((bool(x) for x in self.roles()),
+                   self.check_weights(*insts),
+                   insts)
 
     def check_and_respond(self, event):
-        init_roles = self.roles()
-        inst_up = zip((bool(x) for x in self.roles()), self.dispatch_for_roles(init_roles))
-        for up, inst in inst_up:
+        """
+        Triggers the inspection and reaction to the order of role for
+        our chain.
+        """
+        event.clear()
+        try:
+            inst_up = self.do_dispatch()
+        except ConnectionError:
+            gevent.sleep(1)
+            inst_up = self.do_dispatch()
+
+        for up, weight, inst in inst_up:
             if up:
-                yield self.pool.spawn(inst.monitor_up, event)
+                self.info("%s:%s UP => %s", inst.host, inst.port, weight)
+                gr = self.pool.spawn(inst.monitor_up, event)
+                gr.link(self.monitor_up_exit)
+                yield gr 
             else:
+                self.info("%s:%s DOWN => %s", inst.host, inst.port, weight)
                 yield self.pool.spawn(inst.monitor_down, event, interval=self.down_poll)
 
     def loop(self):
+        """
+        The loop follows the series of actions:
+
+         1. check current state redi, adjust to form a suitable chain
+            if possible, return a series of greenlets to monitor what
+            is up and down.
+
+         2. Wait for a monitor event to indicate a change of
+            connection status (lose or reestablish connection)
+ 
+         3. Kill all watches and clear event
+
+         4. Rinse and repeat
+        """
         event = Event()
         while True:
-            monitors = [x for x in self.check_and_respond(event)]
+            watches = [mon for mon in self.check_and_respond(event)]
+            self.debug("%s", [x.strip() for x in self.check_weights(*self.instances)])
             event.wait()
-            event.clear()
-            [x.kill() for x in monitors]
+            [w.kill() for w in watches] 
+
+
+    def monitor_up_exit(self, gr):
+        inst = gr.value
+        if not inst is None:
+            where = self.instances.index(inst)
+            self.debug("%s:%s caboosed", inst.host, inst.port)
+            self.instances.append(self.instances.pop(where))
 
     def start(self):
         self.logging_setup()
@@ -317,6 +394,38 @@ class Watcher(Logged):
 
 
 
+class Watch(Command):
+    """
+    dundis command for running the watcher
+    """
+    def get_parser(self, name):
+        parser = super(Watch, self).get_parser(name)
+        parser.add_argument('-c', '--config', action='store',
+                            default=None, help='config file')
+
+        parser.add_argument('-r', '--redi', action='store',
+                            default=",".join(Watcher.defaults.redi),
+                            help='Redis instances (comma delimited)')
+
+        parser.add_argument('-p', '--proxy', action='store',
+                            default=Watcher.defaults.redis_proxy, help='Address of redis via haproxy')
+
+        parser.add_argument('--haproxy_sock', action='store',
+                            default=Watcher.defaults.haproxy_sock, help='HAProxy stats socket')
+        
+        parser.add_argument('--haproxy_backend', action='store',
+                            default=Watcher.defaults.ha_backend, help='HAProxy stats socket')
+        
+        #@@ server prefix
+        return parser
+    
+    def run(self, args):
+        redi = args.redi.split(',')
+        watcher = Watcher(redi, args.haproxy_sock, args.proxy, args.haproxy_backend)
+        watcher.start().join()
 
 
         
+
+
+

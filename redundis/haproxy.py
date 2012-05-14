@@ -21,10 +21,13 @@ class StatsSocket(object):
         return self.execute("get weight",  "%s/%s" %(backend, server))
 
     def set_weight(self, backend, server, weight):
-        self.execute("set weight',  %s/%s %s" %(backend, server, weight))
+        self.execute("set weight", "%s/%s %s" %(backend, server, weight))
 
     def set_weight_tuple(self, (backend, server, weight)):
         return self.set_weight(backend, server, weight)
+
+    def get_weight_tuple(self, (backend, server)):
+        return self.get_weight(backend, server).strip()
 
     def enable(self, backend, server):
         self.execute('enable server', '%s/%s' %(backend, server))
@@ -41,6 +44,8 @@ class StatsSocket(object):
         if extra:
             command = command + ' ' + extra
 
+        logger.debug('haproxy: %s', command)
+        
         buff = StringIO()
         end = time() + timeout
 
