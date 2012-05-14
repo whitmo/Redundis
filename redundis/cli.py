@@ -1,7 +1,6 @@
 """
 A command line interface
 """
-from .setup_env import Setup
 from cliff.app import App
 from cliff.commandmanager import CommandManager
 import logging
