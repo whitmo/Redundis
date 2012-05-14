@@ -422,7 +422,10 @@ class Watch(Command):
     def run(self, args):
         redi = args.redi.split(',')
         watcher = Watcher(redi, args.haproxy_sock, args.proxy, args.haproxy_backend)
-        watcher.start().join()
+        try:
+            watcher.start().join()
+        except KeyboardInterrupt:
+            return 
 
 
         
